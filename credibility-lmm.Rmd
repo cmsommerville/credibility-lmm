@@ -1,0 +1,119 @@
+
+```{r}
+library(lme4)
+library(dplyr)
+```
+
+Generate some data! 
+
+```{r} 
+# generate data function
+generateData <- function(mu_groups, sd_groups, sd_obs, n_groups = 100, obs_per_group = 10, test_obs_per_group = 3) {
+
+  # sample group means 
+  group_sample_means <- rnorm(n_groups, mean = mu_groups, sd = sd_groups)
+  # create observations for each group
+  train_obs_index <- rep(1:n_groups, obs_per_group)
+  test_obs_index <- rep(1:n_groups, test_obs_per_group)
+  
+  # draw observations randomly from each group
+  train <- rnorm(train_obs_index, group_sample_means[train_obs_index], sd_obs)
+  test <- rnorm(test_obs_index, group_sample_means[test_obs_index], sd_obs)
+  df_train <- data.frame(x = factor(train_obs_index), y = train)
+  df_test <- data.frame(x = factor(test_obs_index), y = test)
+  return(list(df_train = df_train, df_test = df_test))
+}
+
+data <- generateData(mu_groups = 100, sd_groups = 40, sd_obs = 40)
+df_train <- data$df_train
+df_test <- data$df_test
+head(df_train)
+```
+
+Fit three models on the training data: 
+1. Grand mean only 
+2. Group-specific means 
+3. Linear mixed model
+
+```{r}
+model1 <- lm(y ~ 1, data = df_train)
+model2 <- lm(y ~ x, data = df_train)
+model3 <- lmer(y ~ (1|x), data = df_train)
+```
+
+Evaluate RMSE of all three models on test data: 
+
+```{r}
+rmse <- function(obs, pred) {return((obs - pred) ^ 2 %>% mean %>% sqrt)}
+
+rmse1 <- rmse(df_test$y, predict(model1, df_test))
+rmse2 <- rmse(df_test$y, predict(model2, df_test))
+rmse3 <- rmse(df_test$y, predict(model3, df_test))
+
+df_rmse <- data.frame(RMSE_Model1 = rmse1, RMSE_Model2 = rmse2, RMSE_Model3 = rmse3)
+print(df_rmse)
+```
+
+I posit that Model 3's results are weighted averages of Model 1's and Model 2's results. In other words, for some $Z$, $M3 = (1-Z) * M1 + Z * M2$. Solve for that $Z$ below.
+
+```{r}
+df_preds <- data.frame(obs = df_train$y, 
+                       pred1 = predict(model1, df_train), 
+                       pred2 = predict(model2, df_train), 
+                       pred3 = predict(model3, df_train))
+
+df_preds$weight = 1 - (df_preds$pred3 - df_preds$pred2) / (df_preds$pred1 - df_preds$pred2)
+
+head(df_preds)
+```
+
+Notice that the weight is the same for all rows.This is actually a credibility factor. How is the credibility factor derived [link](https://www.agriculturejournals.cz/publicFiles/52286.pdf)?
+
+```{r}
+calcCredibilityFactors <- function(m1, m2) {
+  # sum of squared errors
+  SSE_model1 <- sum(m1$residuals^2) 
+  SSE_model2 <- sum(m2$residuals^2) 
+  
+  # degrees of freedom
+  degf_model1 <- m1$df.residual
+  degf_model2 <- m2$df.residual
+  
+  MSA <- (SSE_model1 - SSE_model2) / (degf_model1 - degf_model2)
+  MSRes <- SSE_model2 / degf_model2
+  
+  # variance components
+  sigma_A2 <- (MSA - MSRes) / train_obs_per_group
+  sigma2 <- MSRes
+  
+  # credibility factor 
+  cred_factor <- sigma_A2 * train_obs_per_group / (sigma_A2 * train_obs_per_group + sigma2)
+  return(cred_factor) 
+}
+
+calcCredibilityFactors(model1, model2)
+```
+
+Credibility factor is derived from sums of squared errors from the grand mean regression (complete pooling) and the group-specific regression (no pooling). The credibility factor gives a partially-pooled result. As the ratio of explained to unexplained errors changes, the credibility factor changes. 
+
+
+Now let's change the data parameters and recalculate credibilty factors under various situations. 
+
+Option 1: High "between-group" variance, low "within-group" variance. Expect that no pooling (group-specific) model fits well because observations do not vary much within a group, but the groups are well-dispersed. 
+
+```{r}
+# high between-group variance, low within-group variance
+data <- generateData(mu_groups = 100, sd_groups = 100, sd_obs = 5)
+df_train <- data$df_train
+
+# fit models
+model11 <- lm(y ~ 1, data = df_train)
+model12 <- lm(y ~ x, data = df_train)
+
+# get credibility weight
+print(calcCredibilityFactors(model11, model12))
+
+```
+
+
+Option 2: Low "between-group" variance, high "within-group" variance. 
