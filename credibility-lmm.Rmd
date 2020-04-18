@@ -1,10 +1,22 @@
+# Linear Mixed Models and Actuarial Credibility Theory 
+Author: Chandler Sommerville
 
-```{r}
+Date: 4/18/2020 
+
+*** 
+
+The purpose of this document is to illustrate the parallels between linear mixed models (commonly referred to as random effects models, hierarchical linear models, or multi-level models) with what the actuarial community calls credibility theory. 
+
+In actuarial literature, a value is often estimated as a weighted average between the grand mean of a dataset and a cohort-specific mean. The weighted average is calculated using a **credibility factor**. Buhlmann credibility theory is one method for calculating this credibilty factor, and below, I show that Buhlmann's credibility factor is a special case of linear mixed models.  
+
+```{r message=FALSE}
 library(lme4)
 library(dplyr)
+set.seed(111)
 ```
 
-Generate some data! 
+### Generate some data!
+The function below returns a dataset with a dependent variable, $y$ and an indicator for the group, $x$, that the observation belongs to. The dataset has $n_{groups}$ groups, each with the same number of observations per group. The mean of $y$ per group is random, normally generated from a distribution with mean $mu_{groups}$ and standard deviation $sd_{groups}$. Given each group's mean, observations within that group are generated according to a random normal distribution with mean 0 and standard deviation, $sd_{obs}$. 
 
 ```{r} 
 # generate data function
@@ -24,34 +36,27 @@ generateData <- function(mu_groups, sd_groups, sd_obs, n_groups = 100, obs_per_g
   return(list(df_train = df_train, df_test = df_test))
 }
 
-data <- generateData(mu_groups = 100, sd_groups = 40, sd_obs = 40)
+data <- generateData(mu_groups = 100, sd_groups = 40, sd_obs = 100)
 df_train <- data$df_train
 df_test <- data$df_test
 head(df_train)
 ```
 
+## Fit Models
+
 Fit three models on the training data: 
-1. Grand mean only 
+
+1. Grand mean only
+
 2. Group-specific means 
+
 3. Linear mixed model
+
 
 ```{r}
 model1 <- lm(y ~ 1, data = df_train)
 model2 <- lm(y ~ x, data = df_train)
 model3 <- lmer(y ~ (1|x), data = df_train)
-```
-
-Evaluate RMSE of all three models on test data: 
-
-```{r}
-rmse <- function(obs, pred) {return((obs - pred) ^ 2 %>% mean %>% sqrt)}
-
-rmse1 <- rmse(df_test$y, predict(model1, df_test))
-rmse2 <- rmse(df_test$y, predict(model2, df_test))
-rmse3 <- rmse(df_test$y, predict(model3, df_test))
-
-df_rmse <- data.frame(RMSE_Model1 = rmse1, RMSE_Model2 = rmse2, RMSE_Model3 = rmse3)
-print(df_rmse)
 ```
 
 I posit that Model 3's results are weighted averages of Model 1's and Model 2's results. In other words, for some $Z$, $M3 = (1-Z) * M1 + Z * M2$. Solve for that $Z$ below.
@@ -62,15 +67,15 @@ df_preds <- data.frame(obs = df_train$y,
                        pred2 = predict(model2, df_train), 
                        pred3 = predict(model3, df_train))
 
-df_preds$weight = 1 - (df_preds$pred3 - df_preds$pred2) / (df_preds$pred1 - df_preds$pred2)
+df_preds$Z = 1 - (df_preds$pred3 - df_preds$pred2) / (df_preds$pred1 - df_preds$pred2)
 
 head(df_preds)
 ```
 
-Notice that the weight is the same for all rows.This is actually a credibility factor. How is the credibility factor derived [link](https://www.agriculturejournals.cz/publicFiles/52286.pdf)?
+The value, $pred1$, is the same for all rows because it predicts the overall mean for all rows. $pred2$ is the result of the traditional OLS regression, where each group gets its own mean estimate. $pred3$ is the linear mixed model's estimate. $Z$ is the weighted average factor described above. Notice that the weight is the same for all rows.This is actually a credibility factor. How is the credibility factor derived ([link](https://www.agriculturejournals.cz/publicFiles/52286.pdf))?
 
 ```{r}
-calcCredibilityFactors <- function(m1, m2) {
+calcCredibilityFactor <- function(m1, m2, obs_per_group) {
   # sum of squared errors
   SSE_model1 <- sum(m1$residuals^2) 
   SSE_model2 <- sum(m2$residuals^2) 
@@ -83,23 +88,29 @@ calcCredibilityFactors <- function(m1, m2) {
   MSRes <- SSE_model2 / degf_model2
   
   # variance components
-  sigma_A2 <- (MSA - MSRes) / train_obs_per_group
+  sigma_A2 <- (MSA - MSRes) / obs_per_group
   sigma2 <- MSRes
   
   # credibility factor 
-  cred_factor <- sigma_A2 * train_obs_per_group / (sigma_A2 * train_obs_per_group + sigma2)
+  cred_factor <- sigma_A2 * obs_per_group / (sigma_A2 * obs_per_group + sigma2)
   return(cred_factor) 
 }
 
-calcCredibilityFactors(model1, model2)
+print(paste("Credibility Factor: ", calcCredibilityFactor(model1, model2, 10), sep = ""))
 ```
 
-Credibility factor is derived from sums of squared errors from the grand mean regression (complete pooling) and the group-specific regression (no pooling). The credibility factor gives a partially-pooled result. As the ratio of explained to unexplained errors changes, the credibility factor changes. 
+Notice that this credibility factor is the same as the $Z$ parameter calculated above. The credibility factor is derived from sums of squared errors from the grand mean regression (complete pooling) and the group-specific regression (no pooling). 
+
+This equation, $Z = \frac{n \sigma_A^2}{n \sigma_A^2 + \sigma^2}$, is exactly the same as in Buhlmann credibility ([link](https://www.soa.org/globalassets/assets/files/edu/c-24-05.pdf), page 6). In this link and other actuarial literature, $\sigma_A^2$ is referred to as the variance of the hypothetical means (VHM). This is commonly referred to as the "between-groups variance" in statistical literature. Similarly, $\sigma^2$ is referred to as the expected process variance (EPV) or "within-groups variance". 
 
 
-Now let's change the data parameters and recalculate credibilty factors under various situations. 
+*** 
+## Other Data Patterns
 
-Option 1: High "between-group" variance, low "within-group" variance. Expect that no pooling (group-specific) model fits well because observations do not vary much within a group, but the groups are well-dispersed. 
+Now let's change the data parameters and recalculate credibilty factors under various situations. It is useful to consider that the credibility/pooling factor formula can be rewritten as $\frac{n}{n + \frac{\sigma^2}{\sigma_A^2}}$. This implies that, for a fixed $n$, the credibility factor depends only on the ratio of the $\sigma$s. 
+
+#### Option 1: 
+High between-group variance, low within-group variance. Expect that no pooling (group-specific) model fits well because observations do not vary much within a group, but the groups are well-dispersed. 
 
 ```{r}
 # high between-group variance, low within-group variance
@@ -111,9 +122,49 @@ model11 <- lm(y ~ 1, data = df_train)
 model12 <- lm(y ~ x, data = df_train)
 
 # get credibility weight
-print(calcCredibilityFactors(model11, model12))
-
+print(paste("Credibility Factor: ", calcCredibilityFactor(model11, model12, 10), sep = ""))
 ```
 
 
-Option 2: Low "between-group" variance, high "within-group" variance. 
+#### Option 2: 
+Low between-group variance, high within-group variance. Intelligently combining group-level information and grand mean information with credibility weighting should give better estimates than using either individually. 
+
+```{r}
+# low between-group variance, high within-group variance
+data <- generateData(mu_groups = 100, sd_groups = 5, sd_obs = 100)
+df_train <- data$df_train
+
+# fit models
+model21 <- lm(y ~ 1, data = df_train)
+model22 <- lm(y ~ x, data = df_train)
+
+# get credibility weight
+print(paste("Credibility Factor: ", calcCredibilityFactor(model21, model22, 10), sep = ""))
+```
+
+
+
+
+
+
+
+*** 
+### So which model gives better predictions?
+
+Below, we evaluate the root-mean-squared error on the test data, which has been held out up to this point. We see that the linear mixed model tends to have the best aggregate RMSE on this new data. 
+
+```{r}
+rmse <- function(obs, pred) {return((obs - pred) ^ 2 %>% mean %>% sqrt)}
+
+rmse1 <- rmse(df_test$y, predict(model1, df_test))
+rmse2 <- rmse(df_test$y, predict(model2, df_test))
+rmse3 <- rmse(df_test$y, predict(model3, df_test))
+
+df_rmse <- data.frame(RMSE_Model1 = rmse1, RMSE_Model2 = rmse2, RMSE_Model3 = rmse3)
+print(df_rmse)
+```
+
+
+# Conclusion
+
+What the actuarial community calls credibility weighting is really a special case of linear mixed modeling. Linear mixed modeling is a mechanism by which the modeler can intelligently combine overall average and cohort-specific average information. Often, pooling the averages can give better predictive power than using overall averages or cohort-specific averages exclusively. Though we did not delve into the topic, using linear mixed models allows the modeler to generalize the credibility weighting concept to multiple independent variables, as with multiple linear regression, and other distributions, as with generalized linear models (GLMs). 
